@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/Tivarloa.csproj" />
+  <Project Path="tests/Tivarloa.Tests.csproj" />
+</Solution>

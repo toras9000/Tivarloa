@@ -12,7 +12,7 @@ namespace Tivarloa;
 public record WordOutlineBlock(int Level, string Caption, string Content);
 
 /// <summary>抽出オプション</summary>
-/// <param name="WhitespaceCompaction">空白文字を単一のスペースに置き換える</param>
+/// <param name="WithFootnote">脚注を出力するか否か</param>
 public record WordTextExtractorOptions(bool WithFootnote = false);
 
 /// <summary>Wordテキスト抽出</summary>
@@ -91,7 +91,7 @@ public class WordTextExtractor
 
         // 文書のテキスト化
         var footnoteIds = new List<long>();
-        foreach (var element in docBody.Elements<OpenXmlElement>())
+        foreach (var element in enumerateTargetElements(docBody))
         {
             switch (element)
             {
@@ -128,6 +128,7 @@ public class WordTextExtractor
         using var downloadStream = await this.http.Value.GetStreamAsync(url, cancelToken);
         return ExtractOutline(downloadStream, options);
     }
+
     /// <summary>Word文書全体をアウトラインブロック毎にテキスト化する</summary>
     /// <param name="file">Word文書ファイル</param>
     /// <param name="options">抽出オプション</param>
@@ -179,7 +180,7 @@ public class WordTextExtractor
 
         // 文書の各アウトラインブロックをテキスト化
         var footnoteIds = new List<long>();
-        foreach (var element in docBody.Elements<OpenXmlElement>())
+        foreach (var element in enumerateTargetElements(docBody))
         {
             switch (element)
             {
@@ -236,6 +237,35 @@ public class WordTextExtractor
     #endregion
 
     #region ドキュメント処理
+    /// <summary>指定要素の配下からテキスト化対象要素を列挙する。</summary>
+    /// <remarks>
+    /// このメソッドでは Paragraph と Table をテキスト化対象とする。
+    /// 入れ子の要素を多重処理しないよう、見つけた Paragraph と Table の子孫要素は列挙されない。
+    /// </remarks>
+    /// <param name="origin">起点となる要素</param>
+    /// <returns>テキスト化対象要素を列挙するシーケンス</returns>
+    private IEnumerable<OpenXmlElement> enumerateTargetElements(OpenXmlElement origin)
+    {
+        foreach (var element in origin.Elements<OpenXmlElement>())
+        {
+            // テキスト化対象であれば列挙
+            if (element is Paragraph or Table)
+            {
+                yield return element;
+                continue;
+            }
+
+            // 目的の要素でなければその配下を再帰的に列挙
+            if (element.HasChildren)
+            {
+                foreach (var sub in enumerateTargetElements(element))
+                {
+                    yield return sub;
+                }
+            }
+        }
+    }
+
     /// <summary>段落のアウトラインレベルの取得を試みる</summary>
     /// <param name="paragraph">段落</param>
     /// <param name="styles">ドキュメントで定義されているスタイルの辞書</param>
@@ -247,8 +277,8 @@ public class WordTextExtractor
         if (paraProp == null) return null;
 
         // 直接アウトライン設定されていれば利用
-        var lv = paraProp.GetFirstChild<OutlineLevel>()?.Val?.Value;
-        if (lv != null) return lv.Value;
+        var lv = paraProp.OutlineLevel?.Val;
+        if (lv?.HasValue == true) return lv.Value;
 
         // 段落スタイルIDを取得
         var styleId = paraProp.ParagraphStyleId?.Val?.Value;
@@ -259,8 +289,10 @@ public class WordTextExtractor
         if (style == null) return null;
 
         // スタイルのアウトラインがあれば利用
-        var styleLv = style.StyleParagraphProperties?.GetFirstChild<OutlineLevel>()?.Val?.Value;
-        return styleLv;
+        var styleLv = style.StyleParagraphProperties?.OutlineLevel?.Val;
+        if (styleLv?.HasValue == true) return styleLv.Value;
+
+        return null;
     }
 
     /// <summary>段落テキストを抽出する</summary>

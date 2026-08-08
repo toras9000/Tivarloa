@@ -89,18 +89,20 @@ public class WordTextExtractor
         var docBody = doc.MainDocumentPart.Document?.Body;
         if (docBody == null) return;
 
+        // 抽出コンテキストの生成
+        var context = new ExtractContext(doc);
+
         // 文書のテキスト化
-        var footnoteIds = new List<long>();
         foreach (var element in enumerateTargetElements(docBody))
         {
             switch (element)
             {
             case Paragraph paragraph:   // 段落
-                extractParagraphText(paragraph, builder, footnoteIds, options);
+                extractParagraphText(context, paragraph, builder, options);
                 break;
 
             case Table table:           // テーブル
-                extractTableText(table, builder, footnoteIds, options);
+                extractTableText(context, table, builder, options);
                 break;
 
             default:
@@ -112,7 +114,7 @@ public class WordTextExtractor
         if (options?.WithFootnote == true)
         {
             builder.AppendLine("----------------------------------------");
-            extractFootnoteText(doc.MainDocumentPart.FootnotesPart, footnoteIds, builder);
+            extractFootnoteText(context, builder);
         }
     }
     #endregion
@@ -153,10 +155,8 @@ public class WordTextExtractor
         var docBody = doc.MainDocumentPart.Document?.Body;
         if (docBody == null) return [];
 
-        // スタイル参照用に辞書化
-        var styles = doc.MainDocumentPart.StyleDefinitionsPart?.Styles?.Elements<Style>()
-            ?.Where(s => s.StyleId?.Value != null)
-            ?.ToDictionary(s => s.StyleId!.Value!) ?? [];
+        // 抽出コンテキストの生成
+        var context = new ExtractContext(doc);
 
         // アウトライン毎のテキスト
         var outline = new List<WordOutlineBlock>();
@@ -179,26 +179,25 @@ public class WordTextExtractor
         }
 
         // 文書の各アウトラインブロックをテキスト化
-        var footnoteIds = new List<long>();
         foreach (var element in enumerateTargetElements(docBody))
         {
             switch (element)
             {
             case Paragraph paragraph:
-                if (extractOutlineLevel(paragraph, styles) is int lv)
+                if (extractOutlineLevel(context, paragraph) is int lv)
                 {
                     commitOutlineBlock();
                     level = lv;
-                    extractParagraphText(paragraph, caption, footnoteIds, options);
+                    extractParagraphText(context, paragraph, caption, options);
                 }
                 else
                 {
-                    extractParagraphText(paragraph, content, footnoteIds, options);
+                    extractParagraphText(context, paragraph, content, options);
                 }
                 break;
 
             case Table table:
-                extractTableText(table, content, footnoteIds, options);
+                extractTableText(context, table, content, options);
                 break;
 
             default:
@@ -210,11 +209,11 @@ public class WordTextExtractor
         commitOutlineBlock();
 
         // 脚注出力が有効であればテキスト化
-        if (options?.WithFootnote == true && 0 < footnoteIds.Count)
+        if (options?.WithFootnote == true && 0 < context.UsedFootnotes.Count)
         {
             level = -1;
             caption.Append("Footnotes");
-            extractFootnoteText(doc.MainDocumentPart.FootnotesPart, footnoteIds, content);
+            extractFootnoteText(context, content);
             commitOutlineBlock();
         }
 
@@ -227,6 +226,39 @@ public class WordTextExtractor
     public void Dispose()
     {
         this.http.Value.Dispose();
+    }
+    #endregion
+
+    // 非公開型
+    #region 状態管理
+    /// <summary>抽出コンテキスト情報</summary>
+    /// <param name="document">抽出対象ドキュメント</param>
+    private class ExtractContext(WordprocessingDocument document)
+    {
+        /// <summary>使用している脚注ID</summary>
+        public List<long> UsedFootnotes { get; } = new();
+
+        /// <summary>ドキュメントのスタイル定義辞書</summary>
+        public IReadOnlyDictionary<string, Style> Styles => this.styleCache.Value;
+
+        /// <summary>ドキュメントの脚注定義辞書</summary>
+        public IReadOnlyDictionary<long, Footnote> Footnotes => this.footnotesCache.Value;
+
+        /// <summary>スタイル定義辞書キャッシュ</summary>
+        private readonly Lazy<Dictionary<string, Style>> styleCache = new(() =>
+        {
+            return document?.MainDocumentPart?.StyleDefinitionsPart?.Styles?.Elements<Style>()
+                .Where(s => s.StyleId?.HasValue != null)
+                .ToDictionary(s => s.StyleId!.Value!) ?? [];
+        });
+
+        /// <summary>脚注定義辞書キャッシュ</summary>
+        private readonly Lazy<Dictionary<long, Footnote>> footnotesCache = new(() =>
+        {
+            return document.MainDocumentPart?.FootnotesPart?.Footnotes?.Elements<Footnote>()
+                .Where(f => f.Id?.HasValue == true)
+                .ToDictionary(f => f.Id!.Value!) ?? [];
+        });
     }
     #endregion
 
@@ -267,10 +299,10 @@ public class WordTextExtractor
     }
 
     /// <summary>段落のアウトラインレベルの取得を試みる</summary>
+    /// <param name="context">抽出コンテキスト</param>
     /// <param name="paragraph">段落</param>
-    /// <param name="styles">ドキュメントで定義されているスタイルの辞書</param>
     /// <returns>段落がアウトラインレベルを持つ場合はそのレベル値。そうでない場合は null を返却</returns>
-    private int? extractOutlineLevel(Paragraph paragraph, Dictionary<string, Style> styles)
+    private int? extractOutlineLevel(ExtractContext context, Paragraph paragraph)
     {
         // 段落プロパティの参照
         var paraProp = paragraph.ParagraphProperties;
@@ -285,7 +317,7 @@ public class WordTextExtractor
         if (styleId == null) return null;
 
         // 段落スタイルを参照
-        var style = styles.GetValueOrDefault(styleId);
+        var style = context.Styles.GetValueOrDefault(styleId);
         if (style == null) return null;
 
         // スタイルのアウトラインがあれば利用
@@ -296,11 +328,11 @@ public class WordTextExtractor
     }
 
     /// <summary>段落テキストを抽出する</summary>
+    /// <param name="context">抽出コンテキスト</param>
     /// <param name="paragraph">段落オブジェクト</param>
     /// <param name="builder">書き込み先バッファ</param>
-    /// <param name="footnoteIds">参照している脚注番号を格納するリスト</param>
     /// <param name="options">抽出オプション</param>
-    private void extractParagraphText(Paragraph paragraph, StringBuilder builder, List<long> footnoteIds, WordTextExtractorOptions? options = null)
+    private void extractParagraphText(ExtractContext context, Paragraph paragraph, StringBuilder builder, WordTextExtractorOptions? options = null)
     {
         // 配下の要素を処理
         foreach (var element in paragraph.Descendants<OpenXmlElement>())
@@ -316,7 +348,7 @@ public class WordTextExtractor
                 break;
 
             case FootnoteReference fnRef when options?.WithFootnote == true && fnRef.Id?.Value is long refId:   // 脚注ID
-                footnoteIds.Add(refId);
+                context.UsedFootnotes.Add(refId);
                 builder.Append($"[{refId}]");
                 break;
 
@@ -330,11 +362,11 @@ public class WordTextExtractor
     }
 
     /// <summary>テーブルテキストを抽出する</summary>
+    /// <param name="context">抽出コンテキスト</param>
     /// <param name="table">テーブルオブジェク</param>
     /// <param name="builder">書き込み先バッファ</param>
-    /// <param name="footnoteIds">参照している脚注番号を格納するリスト</param>
     /// <param name="options">抽出オプション</param>
-    private void extractTableText(Table table, StringBuilder builder, List<long> footnoteIds, WordTextExtractorOptions? options = null)
+    private void extractTableText(ExtractContext context, Table table, StringBuilder builder, WordTextExtractorOptions? options = null)
     {
         // 行を処理
         foreach (var row in table.Elements<TableRow>())
@@ -356,7 +388,7 @@ public class WordTextExtractor
                         break;
 
                     case FootnoteReference fnRef when options?.WithFootnote == true && fnRef.Id?.Value is long refId:   // 脚注ID
-                        footnoteIds.Add(refId);
+                        context.UsedFootnotes.Add(refId);
                         builder.Append($"[{refId}]");
                         break;
 
@@ -370,26 +402,21 @@ public class WordTextExtractor
     }
 
     /// <summary>脚注をテキストを抽出する</summary>
-    /// <param name="footnotes">ドキュメントの脚注</param>
-    /// <param name="usedIds">参照されている脚注IDリスト</param>
+    /// <param name="context">抽出コンテキスト</param>
     /// <param name="builder">書き込み先バッファ</param>
-    private void extractFootnoteText(FootnotesPart? footnotes, List<long> usedIds, StringBuilder builder)
+    private void extractFootnoteText(ExtractContext context, StringBuilder builder)
     {
         // 脚注出力する内容がない場合は
-        if (footnotes?.Footnotes == null) return;
-        if (usedIds.Count <= 0) return;
-
-        // 脚注をIDで引けるように辞書化
-        var footnoteDict = footnotes.Footnotes.Elements<Footnote>().Where(f => f.Id?.HasValue == true).ToDictionary(f => f.Id!.Value!);
+        if (context.UsedFootnotes.Count <= 0) return;
 
         // 参照(使用)しているIDの脚注を出力
-        foreach (var id in usedIds.Distinct())
+        foreach (var id in context.UsedFootnotes.Distinct())
         {
             // 脚注番号
             builder.Append($"[{id}]:");
 
             // 対応する脚注取得
-            var footnote = footnoteDict.GetValueOrDefault(id);
+            var footnote = context.Footnotes.GetValueOrDefault(id);
             if (footnote == null)
             {
                 // 脚注が見つからない場合はその旨を出力

@@ -1,4 +1,5 @@
 using AwesomeAssertions;
+using Lestaly;
 
 namespace Tivarloa.Tests;
 
@@ -8,7 +9,7 @@ public class WordTextExtractorTests
     [TestMethod]
     public async Task Extract()
     {
-        var url = new Uri("https://filesamples.com/samples/document/docx/sample1.docx");
+        var url = new Uri("https://github.com/opavon/ThesisTemplate/raw/refs/heads/main/Thesis_and_Cover_Template.docx");
 
         var normalText = default(string);
         {
@@ -31,7 +32,7 @@ public class WordTextExtractorTests
     [TestMethod]
     public async Task ExtractOutline()
     {
-        var url = new Uri("https://filesamples.com/samples/document/docx/sample1.docx");
+        var url = new Uri("https://github.com/opavon/ThesisTemplate/raw/refs/heads/main/Thesis_and_Cover_Template.docx");
 
         var normalText = default(List<WordOutlineBlock>);
         {
@@ -50,4 +51,5 @@ public class WordTextExtractorTests
         normalText.Should().NotBeEmpty();
         footnotText.Should().NotBeEmpty();
     }
+
 }

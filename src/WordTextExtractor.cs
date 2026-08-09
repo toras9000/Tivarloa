@@ -59,64 +59,44 @@ public class WordTextExtractor
     /// <param name="builder">書き込み先文字列ビルダ</param>
     /// <param name="options">抽出オプション</param>
     /// <param name="cancelToken">キャンセルトークン</param>
-    public async ValueTask ExtractWriteAsync(Uri url, StringBuilder builder, WordTextExtractorOptions? options = null, CancellationToken cancelToken = default)
-    {
-        using var downloadStream = await this.http.Value.GetStreamAsync(url, cancelToken);
-        ExtractWrite(downloadStream, builder, options);
-    }
+    public ValueTask ExtractWriteAsync(Uri url, StringBuilder builder, WordTextExtractorOptions? options = null, CancellationToken cancelToken = default)
+        => extractWriteAsync(url, new StringBuilderFacade(builder), options, cancelToken);
+
+    /// <summary>Word文書全体のテキストを文字列ビルダに書き込む</summary>
+    /// <param name="url">Word文書のWeb URL</param>
+    /// <param name="writer">書き込み先テキストライタ</param>
+    /// <param name="options">抽出オプション</param>
+    /// <param name="cancelToken">キャンセルトークン</param>
+    public ValueTask ExtractWriteAsync(Uri url, TextWriter writer, WordTextExtractorOptions? options = null, CancellationToken cancelToken = default)
+        => extractWriteAsync(url, new TextWriterFacade(writer), options, cancelToken);
 
     /// <summary>Word文書全体のテキストを文字列ビルダに書き込む</summary>
     /// <param name="file">Word文書ファイル</param>
     /// <param name="builder">書き込み先文字列ビルダ</param>
     /// <param name="options">抽出オプション</param>
     public void ExtractWrite(FileInfo file, StringBuilder builder, WordTextExtractorOptions? options = null)
-    {
-        using var fileStream = file.OpenRead();
-        ExtractWrite(fileStream, builder, options);
-    }
+        => extractWrite(file, new StringBuilderFacade(builder), options);
+
+    /// <summary>Word文書全体のテキストを文字列ビルダに書き込む</summary>
+    /// <param name="file">Word文書ファイル</param>
+    /// <param name="writer">書き込み先テキストライタ</param>
+    /// <param name="options">抽出オプション</param>
+    public void ExtractWrite(FileInfo file, TextWriter writer, WordTextExtractorOptions? options = null)
+        => extractWrite(file, new TextWriterFacade(writer), options);
 
     /// <summary>Word文書全体のテキストを文字列ビルダに書き込む</summary>
     /// <param name="stream">Word文書ストリーム</param>
     /// <param name="builder">書き込み先文字列ビルダ</param>
     /// <param name="options">抽出オプション</param>
     public void ExtractWrite(Stream stream, StringBuilder builder, WordTextExtractorOptions? options = null)
-    {
-        // 文書オープン
-        using var doc = WordprocessingDocument.Open(stream, isEditable: false);
-        if (doc.MainDocumentPart == null) return;
+        => extractWrite(stream, new StringBuilderFacade(builder), options);
 
-        // 本文参照
-        var docBody = doc.MainDocumentPart.Document?.Body;
-        if (docBody == null) return;
-
-        // 抽出コンテキストの生成
-        var context = new ExtractContext(doc);
-
-        // 文書のテキスト化
-        foreach (var element in enumerateTargetElements(docBody))
-        {
-            switch (element)
-            {
-            case Paragraph paragraph:   // 段落
-                extractParagraphText(context, paragraph, builder, options);
-                break;
-
-            case Table table:           // テーブル
-                extractTableText(context, table, builder, options);
-                break;
-
-            default:
-                break;
-            }
-        }
-
-        // 脚注出力が有効であればテキスト化
-        if (options?.WithFootnote == true)
-        {
-            builder.AppendLine("----------------------------------------");
-            extractFootnoteText(context, builder);
-        }
-    }
+    /// <summary>Word文書全体のテキストを文字列ビルダに書き込む</summary>
+    /// <param name="stream">Word文書ストリーム</param>
+    /// <param name="writer">書き込み先テキストライタ</param>
+    /// <param name="options">抽出オプション</param>
+    public void ExtractWrite(Stream stream, TextWriter writer, WordTextExtractorOptions? options = null)
+        => extractWrite(stream, new TextWriterFacade(writer), options);
     #endregion
 
     #region テキスト抽出：アウトライン毎
@@ -128,7 +108,7 @@ public class WordTextExtractor
     public async ValueTask<List<WordOutlineBlock>> ExtractOutlineAsync(Uri url, WordTextExtractorOptions? options = null, CancellationToken cancelToken = default)
     {
         using var downloadStream = await this.http.Value.GetStreamAsync(url, cancelToken);
-        return ExtractOutline(downloadStream, options);
+        return extractOutline(downloadStream, options);
     }
 
     /// <summary>Word文書全体をアウトラインブロック毎にテキスト化する</summary>
@@ -138,7 +118,7 @@ public class WordTextExtractor
     public List<WordOutlineBlock> ExtractOutline(FileInfo file, WordTextExtractorOptions? options = null)
     {
         using var fileStream = file.OpenRead();
-        return ExtractOutline(fileStream, options);
+        return extractOutline(fileStream, options);
     }
 
     /// <summary>Word文書全体をアウトラインブロック毎にテキスト化する</summary>
@@ -146,79 +126,7 @@ public class WordTextExtractor
     /// <param name="options">抽出オプション</param>
     /// <returns>アウトライン毎のテキスト情報</returns>
     public List<WordOutlineBlock> ExtractOutline(Stream stream, WordTextExtractorOptions? options = null)
-    {
-        // 文書オープン
-        using var doc = WordprocessingDocument.Open(stream, isEditable: false);
-        if (doc.MainDocumentPart == null) return [];
-
-        // 本文参照
-        var docBody = doc.MainDocumentPart.Document?.Body;
-        if (docBody == null) return [];
-
-        // 抽出コンテキストの生成
-        var context = new ExtractContext(doc);
-
-        // アウトライン毎のテキスト
-        var outline = new List<WordOutlineBlock>();
-
-        // 現在の収集情報
-        var level = -1;
-        var caption = new StringBuilder();
-        var content = new StringBuilder();
-
-        // 現在の収集情報を確定するローカルメソッド
-        void commitOutlineBlock()
-        {
-            if (0 < content.Length || 0 < caption.Length)
-            {
-                outline.Add(new(level, caption.ToString(), content.ToString()));
-                level = -1;
-                caption.Clear();
-                content.Clear();
-            }
-        }
-
-        // 文書の各アウトラインブロックをテキスト化
-        foreach (var element in enumerateTargetElements(docBody))
-        {
-            switch (element)
-            {
-            case Paragraph paragraph:
-                if (extractOutlineLevel(context, paragraph) is int lv)
-                {
-                    commitOutlineBlock();
-                    level = lv;
-                    extractParagraphText(context, paragraph, caption, options);
-                }
-                else
-                {
-                    extractParagraphText(context, paragraph, content, options);
-                }
-                break;
-
-            case Table table:
-                extractTableText(context, table, content, options);
-                break;
-
-            default:
-                break;
-            }
-        }
-
-        // 最後のブロックを確定
-        commitOutlineBlock();
-
-        // 脚注出力が有効であればテキスト化
-        if (options?.WithFootnote == true && 0 < context.UsedFootnotes.Count)
-        {
-            level = -1;
-            caption.Append("Footnotes");
-            extractFootnoteText(context, content);
-            commitOutlineBlock();
-        }
-
-        return outline;
-    }
+        => extractOutline(stream, options);
     #endregion
 
     #region 破棄
@@ -266,6 +174,153 @@ public class WordTextExtractor
     #region 内部リソース
     /// <summary>HTTPクライアント</summary>
     private Lazy<HttpClient> http = new(() => new());
+    #endregion
+
+    #region テキスト抽出：文書全体 (書き出し)
+    /// <summary>Word文書全体のテキストを文字列ビルダに書き込む</summary>
+    /// <param name="url">Word文書のWeb URL</param>
+    /// <param name="writer">書き込み処理</param>
+    /// <param name="options">抽出オプション</param>
+    /// <param name="cancelToken">キャンセルトークン</param>
+    private async ValueTask extractWriteAsync(Uri url, IWriterFacade writer, WordTextExtractorOptions? options, CancellationToken cancelToken)
+    {
+        using var downloadStream = await this.http.Value.GetStreamAsync(url, cancelToken);
+        extractWrite(downloadStream, writer, options);
+    }
+
+    /// <summary>Word文書全体のテキストを文字列ビルダに書き込む</summary>
+    /// <param name="file">Word文書ファイル</param>
+    /// <param name="writer">書き込み処理</param>
+    /// <param name="options">抽出オプション</param>
+    private void extractWrite(FileInfo file, IWriterFacade writer, WordTextExtractorOptions? options)
+    {
+        using var fileStream = file.OpenRead();
+        extractWrite(fileStream, writer, options);
+    }
+
+    /// <summary>Word文書全体のテキストを文字列ビルダに書き込む</summary>
+    /// <param name="stream">Word文書ストリーム</param>
+    /// <param name="writer">書き込み処理</param>
+    /// <param name="options">抽出オプション</param>
+    private void extractWrite(Stream stream, IWriterFacade writer, WordTextExtractorOptions? options)
+    {
+        // 文書オープン
+        using var doc = WordprocessingDocument.Open(stream, isEditable: false);
+        if (doc.MainDocumentPart == null) return;
+
+        // 本文参照
+        var docBody = doc.MainDocumentPart.Document?.Body;
+        if (docBody == null) return;
+
+        // 抽出コンテキストの生成
+        var context = new ExtractContext(doc);
+
+        // 文書のテキスト化
+        foreach (var element in enumerateTargetElements(docBody))
+        {
+            switch (element)
+            {
+            case Paragraph paragraph:   // 段落
+                extractParagraphText(context, paragraph, writer, options);
+                break;
+
+            case Table table:           // テーブル
+                extractTableText(context, table, writer, options);
+                break;
+
+            default:
+                break;
+            }
+        }
+
+        // 脚注出力が有効であればテキスト化
+        if (options?.WithFootnote == true)
+        {
+            writer.WriteLine("----------------------------------------");
+            extractFootnoteText(context, writer);
+        }
+    }
+    #endregion
+
+    #region テキスト抽出：アウトライン毎
+    /// <summary>Word文書全体をアウトラインブロック毎にテキスト化する</summary>
+    /// <param name="stream">Word文書ストリーム</param>
+    /// <param name="options">抽出オプション</param>
+    /// <returns>アウトライン毎のテキスト情報</returns>
+    private List<WordOutlineBlock> extractOutline(Stream stream, WordTextExtractorOptions? options = null)
+    {
+        // 文書オープン
+        using var doc = WordprocessingDocument.Open(stream, isEditable: false);
+        if (doc.MainDocumentPart == null) return [];
+
+        // 本文参照
+        var docBody = doc.MainDocumentPart.Document?.Body;
+        if (docBody == null) return [];
+
+        // 抽出コンテキストの生成
+        var context = new ExtractContext(doc);
+
+        // アウトライン毎のテキスト
+        var outline = new List<WordOutlineBlock>();
+
+        // 現在の収集情報
+        var level = -1;
+        var caption = new StringBuilderFacade(new());
+        var content = new StringBuilderFacade(new());
+
+        // 現在の収集情報を確定するローカルメソッド
+        void commitOutlineBlock()
+        {
+            if (0 < content.Builder.Length || 0 < caption.Builder.Length)
+            {
+                outline.Add(new(level, caption.Builder.ToString(), content.Builder.ToString()));
+                level = -1;
+                caption.Builder.Clear();
+                content.Builder.Clear();
+            }
+        }
+
+        // 文書の各アウトラインブロックをテキスト化
+        foreach (var element in enumerateTargetElements(docBody))
+        {
+            switch (element)
+            {
+            case Paragraph paragraph:
+                if (extractOutlineLevel(context, paragraph) is int lv)
+                {
+                    commitOutlineBlock();
+                    level = lv;
+                    extractParagraphText(context, paragraph, caption, options);
+                }
+                else
+                {
+                    extractParagraphText(context, paragraph, content, options);
+                }
+                break;
+
+            case Table table:
+                extractTableText(context, table, content, options);
+                break;
+
+            default:
+                break;
+            }
+        }
+
+        // 最後のブロックを確定
+        commitOutlineBlock();
+
+        // 脚注出力が有効であればテキスト化
+        if (options?.WithFootnote == true && 0 < context.UsedFootnotes.Count)
+        {
+            level = -1;
+            caption.Write("Footnotes");
+            extractFootnoteText(context, content);
+            commitOutlineBlock();
+        }
+
+        return outline;
+    }
     #endregion
 
     #region ドキュメント処理
@@ -330,9 +385,9 @@ public class WordTextExtractor
     /// <summary>段落テキストを抽出する</summary>
     /// <param name="context">抽出コンテキスト</param>
     /// <param name="paragraph">段落オブジェクト</param>
-    /// <param name="builder">書き込み先バッファ</param>
+    /// <param name="writer">書き込み処理</param>
     /// <param name="options">抽出オプション</param>
-    private void extractParagraphText(ExtractContext context, Paragraph paragraph, StringBuilder builder, WordTextExtractorOptions? options = null)
+    private void extractParagraphText(ExtractContext context, Paragraph paragraph, IWriterFacade writer, WordTextExtractorOptions? options = null)
     {
         // 配下の要素を処理
         foreach (var element in paragraph.Descendants<OpenXmlElement>())
@@ -340,16 +395,16 @@ public class WordTextExtractor
             switch (element)
             {
             case Text text: // テキスト
-                builder.Append(text.Text);
+                writer.Write(text.Text);
                 break;
 
             case Break:     // 改行
-                builder.AppendLine();
+                writer.WriteLine();
                 break;
 
             case FootnoteReference fnRef when options?.WithFootnote == true && fnRef.Id?.Value is long refId:   // 脚注ID
                 context.UsedFootnotes.Add(refId);
-                builder.Append($"[{refId}]");
+                writer.Write($"[{refId}]");
                 break;
 
             default:
@@ -357,16 +412,16 @@ public class WordTextExtractor
             }
         }
 
-        // 段落末尾に
-        builder.AppendLine();
+        // 段落末尾に改行
+        writer.WriteLine();
     }
 
     /// <summary>テーブルテキストを抽出する</summary>
     /// <param name="context">抽出コンテキスト</param>
     /// <param name="table">テーブルオブジェク</param>
-    /// <param name="builder">書き込み先バッファ</param>
+    /// <param name="writer">書き込み処理</param>
     /// <param name="options">抽出オプション</param>
-    private void extractTableText(ExtractContext context, Table table, StringBuilder builder, WordTextExtractorOptions? options = null)
+    private void extractTableText(ExtractContext context, Table table, IWriterFacade writer, WordTextExtractorOptions? options = null)
     {
         // 行を処理
         foreach (var row in table.Elements<TableRow>())
@@ -374,22 +429,22 @@ public class WordTextExtractor
             // セルを処理
             foreach (var cell in row.Elements<TableCell>())
             {
-                builder.Append('|');
+                writer.Write("|");
                 foreach (var element in cell.Descendants<OpenXmlElement>())
                 {
                     switch (element)
                     {
                     case Text text: // テキスト
-                        builder.Append(text.Text);
+                        writer.Write(text.Text);
                         break;
 
                     case Break:     // 改行
-                        builder.Append(' ');
+                        writer.Write(" ");
                         break;
 
                     case FootnoteReference fnRef when options?.WithFootnote == true && fnRef.Id?.Value is long refId:   // 脚注ID
                         context.UsedFootnotes.Add(refId);
-                        builder.Append($"[{refId}]");
+                        writer.Write($"[{refId}]");
                         break;
 
                     default:
@@ -397,14 +452,14 @@ public class WordTextExtractor
                     }
                 }
             }
-            builder.AppendLine("|");
+            writer.WriteLine("|");
         }
     }
 
     /// <summary>脚注をテキストを抽出する</summary>
     /// <param name="context">抽出コンテキスト</param>
-    /// <param name="builder">書き込み先バッファ</param>
-    private void extractFootnoteText(ExtractContext context, StringBuilder builder)
+    /// <param name="writer">書き込み処理</param>
+    private void extractFootnoteText(ExtractContext context, IWriterFacade writer)
     {
         // 脚注出力する内容がない場合は
         if (context.UsedFootnotes.Count <= 0) return;
@@ -413,14 +468,15 @@ public class WordTextExtractor
         foreach (var id in context.UsedFootnotes.Distinct())
         {
             // 脚注番号
-            builder.Append($"[{id}]:");
+            writer.Write($"[{id}]:");
 
             // 対応する脚注取得
+            var lineEnded = false;
             var footnote = context.Footnotes.GetValueOrDefault(id);
             if (footnote == null)
             {
                 // 脚注が見つからない場合はその旨を出力
-                builder.Append(" ** Missing footnote. **");
+                writer.Write(" ** Missing footnote. **");
             }
             else
             {
@@ -430,11 +486,16 @@ public class WordTextExtractor
                     switch (element)
                     {
                     case Text text:
-                        builder.Append(text.Text);
+                        if (text.Text is string elemText && 0 < elemText.Length)
+                        {
+                            writer.Write(text.Text);
+                            lineEnded = elemText[^1] is '\r' or '\n';
+                        }
                         break;
 
                     case Break:
-                        builder.AppendLine();
+                        writer.WriteLine();
+                        lineEnded = true;
                         break;
 
                     default:
@@ -444,9 +505,9 @@ public class WordTextExtractor
             }
 
             // 脚注の末尾に改行が無ければ付与しておく
-            if (0 < builder.Length && builder[^1] is not '\r' and not '\n')
+            if (!lineEnded)
             {
-                builder.AppendLine();
+                writer.WriteLine();
             }
         }
     }

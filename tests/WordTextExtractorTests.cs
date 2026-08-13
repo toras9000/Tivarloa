@@ -34,14 +34,14 @@ public class WordTextExtractorTests
     {
         var url = new Uri("https://github.com/opavon/ThesisTemplate/raw/refs/heads/main/Thesis_and_Cover_Template.docx");
 
-        var normalText = default(List<WordOutlineBlock>);
+        var normalText = default(WordOutlineBlock[]);
         {
             var options = new WordTextExtractorOptions();
             var extractor = new WordTextExtractor();
             normalText = await extractor.ExtractOutlineAsync(url, options);
         }
 
-        var footnotText = default(List<WordOutlineBlock>);
+        var footnotText = default(WordOutlineBlock[]);
         {
             var options = new WordTextExtractorOptions(WithFootnote: true);
             var extractor = new WordTextExtractor();

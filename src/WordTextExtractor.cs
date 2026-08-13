@@ -105,28 +105,28 @@ public class WordTextExtractor
     /// <param name="options">抽出オプション</param>
     /// <param name="cancelToken">キャンセルトークン</param>
     /// <returns>アウトライン毎のテキスト情報</returns>
-    public async ValueTask<List<WordOutlineBlock>> ExtractOutlineAsync(Uri url, WordTextExtractorOptions? options = null, CancellationToken cancelToken = default)
+    public async ValueTask<WordOutlineBlock[]> ExtractOutlineAsync(Uri url, WordTextExtractorOptions? options = null, CancellationToken cancelToken = default)
     {
         using var downloadStream = await this.http.Value.GetStreamAsync(url, cancelToken);
-        return extractOutline(downloadStream, options);
+        return ExtractOutline(downloadStream, options);
     }
 
     /// <summary>Word文書全体をアウトラインブロック毎にテキスト化する</summary>
     /// <param name="file">Word文書ファイル</param>
     /// <param name="options">抽出オプション</param>
     /// <returns>アウトライン毎のテキスト情報</returns>
-    public List<WordOutlineBlock> ExtractOutline(FileInfo file, WordTextExtractorOptions? options = null)
+    public WordOutlineBlock[] ExtractOutline(FileInfo file, WordTextExtractorOptions? options = null)
     {
         using var fileStream = file.OpenRead();
-        return extractOutline(fileStream, options);
+        return ExtractOutline(fileStream, options);
     }
 
     /// <summary>Word文書全体をアウトラインブロック毎にテキスト化する</summary>
     /// <param name="stream">Word文書ストリーム</param>
     /// <param name="options">抽出オプション</param>
     /// <returns>アウトライン毎のテキスト情報</returns>
-    public List<WordOutlineBlock> ExtractOutline(Stream stream, WordTextExtractorOptions? options = null)
-        => extractOutline(stream, options);
+    public WordOutlineBlock[] ExtractOutline(Stream stream, WordTextExtractorOptions? options = null)
+        => extractOutline(stream, options).ToArray();
     #endregion
 
     #region 破棄
@@ -139,9 +139,9 @@ public class WordTextExtractor
 
     // 非公開型
     #region データ管理
-    /// <summary></summary>
-    /// <param name="NumID"></param>
-    /// <param name="Level"></param>
+    /// <summary>ナンバリング情報</summary>
+    /// <param name="NumID">ナンバリングID</param>
+    /// <param name="Level">ナンバリングレベル</param>
     private record struct NumberingRef(int NumID, int Level);
     #endregion
 
@@ -400,21 +400,18 @@ public class WordTextExtractor
     /// <param name="stream">Word文書ストリーム</param>
     /// <param name="options">抽出オプション</param>
     /// <returns>アウトライン毎のテキスト情報</returns>
-    private List<WordOutlineBlock> extractOutline(Stream stream, WordTextExtractorOptions? options = null)
+    private IEnumerable<WordOutlineBlock> extractOutline(Stream stream, WordTextExtractorOptions? options = null)
     {
         // 文書オープン
         using var doc = WordprocessingDocument.Open(stream, isEditable: false);
-        if (doc.MainDocumentPart == null) return [];
+        if (doc.MainDocumentPart == null) yield break;
 
         // 本文参照
         var docBody = doc.MainDocumentPart.Document?.Body;
-        if (docBody == null) return [];
+        if (docBody == null) yield break;
 
         // 抽出コンテキストの生成
         var context = new ExtractContext(doc);
-
-        // アウトライン毎のテキスト
-        var outline = new List<WordOutlineBlock>();
 
         // 現在の収集情報
         var level = -1;
@@ -423,16 +420,16 @@ public class WordTextExtractor
         var content = new StringBuilderFacade(new());
 
         // 現在の収集情報を確定するローカルメソッド
-        void commitOutlineBlock()
+        WordOutlineBlock? commitOutlineBlock()
         {
-            if (0 < content.Builder.Length || 0 < caption.Builder.Length)
-            {
-                outline.Add(new(level, caption.Builder.ToString(), number, content.Builder.ToString()));
-                level = -1;
-                number = null;
-                caption.Builder.Clear();
-                content.Builder.Clear();
-            }
+            if (content.Builder.Length <= 0 && caption.Builder.Length <= 0) return null;
+
+            var outline = new WordOutlineBlock(level, caption.Builder.ToString(), number, content.Builder.ToString());
+            level = -1;
+            number = null;
+            caption.Builder.Clear();
+            content.Builder.Clear();
+            return outline;
         }
 
         // 文書の各アウトラインブロックをテキスト化
@@ -445,7 +442,7 @@ public class WordTextExtractor
                 if (extractOutlineLevel(context, paragraph) is int lv)
                 {
                     // アウトライン段落の場合、すでに収集中のアウトラインブロックがあれば確定する
-                    commitOutlineBlock();
+                    if (commitOutlineBlock() is WordOutlineBlock block) yield return block;
                     // 新しいアウトラインブロックを開始する
                     level = lv;
                     number = extractNumberingString(context, paragraph);
@@ -476,7 +473,7 @@ public class WordTextExtractor
         }
 
         // 最後のブロックを確定
-        commitOutlineBlock();
+        if (commitOutlineBlock() is WordOutlineBlock lastBlock) yield return lastBlock;
 
         // 脚注出力が有効であればテキスト化
         if (options?.WithFootnote == true && 0 < context.UsedFootnotes.Count)
@@ -484,10 +481,8 @@ public class WordTextExtractor
             level = -1;
             caption.Write("Footnotes");
             extractFootnoteText(context, content);
-            commitOutlineBlock();
+            if (commitOutlineBlock() is WordOutlineBlock block) yield return block;
         }
-
-        return outline;
     }
     #endregion
 

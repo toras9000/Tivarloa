@@ -45,7 +45,7 @@
     <PackageOutputPath>$(MSBuildThisFileDirectory)/../packages/$(Configuration)</PackageOutputPath>
   </PropertyGroup>
   <ItemGroup>
-    <None Include="./readme.md" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="../readme.md" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
   <ItemGroup>

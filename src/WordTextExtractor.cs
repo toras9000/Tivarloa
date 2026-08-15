@@ -233,6 +233,7 @@ public class WordTextExtractor
     /// <remarks>
     /// このコンテキストはナンバリングID(ナンバリングインスタンス)と対応し、階層的なナンバリングの採番を行うための状態・処理となる。
     /// 文書中の各ナンバリング箇所で、1回づつ <see cref="Advance(int)"/> を呼び出すことで順次採番を行う。
+    /// ナンバリングの数値種別はサポートしない。ローマ数字、漢数字、アルファベットなどのナンバリング設定でも、常にアラビア数値で文字列化する。
     /// </remarks>
     private class NumberingContext
     {
@@ -243,15 +244,23 @@ public class WordTextExtractor
         {
             this.levels = new();
             this.startNumbers = new();
+            this.formats = new();
 
             foreach (var lv in abs.Elements<Level>())
             {
                 if (lv.LevelIndex?.HasValue != true) continue;
-                if (lv.StartNumberingValue?.Val?.HasValue != true) continue;
                 var level = lv.LevelIndex.Value;
                 if (level < 0) continue;
-                while (this.startNumbers.Count < (level + 1)) this.startNumbers.Add(null);
-                this.startNumbers[level] = lv.StartNumberingValue.Val.Value;
+                if (lv.StartNumberingValue?.Val?.HasValue == true)
+                {
+                    while (this.startNumbers.Count < (level + 1)) this.startNumbers.Add(null);
+                    this.startNumbers[level] = lv.StartNumberingValue.Val.Value;
+                }
+                if (lv.LevelText?.Val?.HasValue == true)
+                {
+                    while (this.formats.Count < (level + 1)) this.formats.Add(null);
+                    this.formats[level] = lv.LevelText.Val.Value;
+                }
             }
             foreach (var ovLv in inst.Elements<LevelOverride>())
             {
@@ -304,13 +313,7 @@ public class WordTextExtractor
             }
 
             // 階層的な各レベル値から文字列構築
-            var builder = new StringBuilder();
-            for (var i = 0; i < this.levels.Count; i++)
-            {
-                if (i != 0) builder.Append(".");
-                builder.Append(this.levels[i]);
-            }
-            return builder.ToString();
+            return buildLevelText(level);
         }
 
         /// <summary>現在のレベル毎採番値</summary>
@@ -318,6 +321,52 @@ public class WordTextExtractor
 
         /// <summary>レベル毎の開始番号値</summary>
         private readonly List<int?> startNumbers;
+
+        /// <summary>レベル毎の数値書式</summary>
+        private readonly List<string?> formats;
+
+        /// <summary>階層ナンバリングテキストを構築する</summary>
+        /// <param name="level">階層レベル</param>
+        /// <returns>ナンバリング文字列</returns>
+        private string buildLevelText(int level)
+        {
+            var builder = new StringBuilder();
+
+            // レベルの書式を取得
+            var format = level < this.formats.Count ? this.formats[level] : null;
+            if (string.IsNullOrEmpty(format))
+            {
+                // 書式が無い場合、ドット区切りで文字列化する
+                var lvCount = Math.Min(this.levels.Count, level + 1);
+                for (var i = 0; i < lvCount; i++)
+                {
+                    if (i != 0) builder.Append(".");
+                    builder.Append(this.levels[i]);
+                }
+            }
+            else
+            {
+                // 書式内の %n をレベルのナンバリング値に置き換える
+                var scan = format.AsSpan();
+                while (!scan.IsEmpty)
+                {
+                    if (scan[0] is '%' && 1 < scan.Length && '1' <= scan[1] && scan[1] <= '9')
+                    {
+                        var refLv = scan[1] - '1';
+                        var levelNum = refLv < this.levels.Count ? this.levels[refLv] : 0;
+                        builder.Append(levelNum);
+                        scan = scan[2..];
+                    }
+                    else
+                    {
+                        builder.Append(scan[0]);
+                        scan = scan[1..];
+                    }
+                }
+            }
+
+            return builder.ToString();
+        }
     }
     #endregion
 

@@ -1,5 +1,6 @@
 using AwesomeAssertions;
 using Lestaly;
+using Tivarloa.Tests._Helper;
 
 namespace Tivarloa.Tests;
 
@@ -52,4 +53,19 @@ public class WordTextExtractorTests
         footnotText.Should().NotBeEmpty();
     }
 
+    [TestMethod]
+    public async Task ExtractOutline_Generate()
+    {
+        using var tempDir = new TempDir();
+        var testFile = WordDocHelper.CreateTestDocument(tempDir.Info.RelativeFile("test.docx"));
+
+        var options = new WordTextExtractorOptions();
+        var extractor = new WordTextExtractor();
+        var outline = extractor.ExtractOutline(testFile, options);
+
+        outline[0].Number.Should().Be("%%[1]%%");
+        outline[1].Number.Should().Be("<1 - 1>");
+        outline[2].Number.Should().Be("<1 - 2>");
+        outline[3].Number.Should().Be("%%[2]%%");
+    }
 }

@@ -10,7 +10,7 @@ public record PdfPage(int Number, string Text);
 
 /// <summary>PDFテキスト抽出オプション</summary>
 /// <param name="Password">パスワード</param>
-/// <param name="UseActualText">パスワード</param>
+/// <param name="UseActualText">ActualText を使うか否か</param>
 /// <param name="WhitespaceCompaction">空白文字を単一のスペースに置き換える</param>
 /// <param name="ParagraphSeparation">段落区切りに2つの改行を挿入する</param>
 public record PdfTextExtractorOptions(string? Password = default, bool UseActualText = false, bool WhitespaceCompaction = false, bool ParagraphSeparation = false);

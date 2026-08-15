@@ -8,6 +8,7 @@ namespace Tivarloa;
 /// <summary>アウトラインブロック</summary>
 /// <param name="Level">アウトラインレベル。</param>
 /// <param name="Caption">アウトラインキャプション</param>
+/// <param name="Number">ナンバリング</param>
 /// <param name="Content">アウトラインブロック内容</param>
 public record WordOutlineBlock(int Level, string Caption, string? Number, string Content);
 
@@ -312,7 +313,10 @@ public class WordTextExtractor
             return builder.ToString();
         }
 
+        /// <summary>現在のレベル毎採番値</summary>
         private readonly List<int> levels;
+
+        /// <summary>レベル毎の開始番号値</summary>
         private readonly List<int?> startNumbers;
     }
     #endregion
